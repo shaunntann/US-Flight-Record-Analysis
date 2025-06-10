@@ -1,0 +1,1 @@
+The follow code consists of the analysis on a decade's worth of US Domestic Flight Data, uncovering patterns, trends and outliers with visualisations provided that provides a great insight of the operations in the aviation industry.
