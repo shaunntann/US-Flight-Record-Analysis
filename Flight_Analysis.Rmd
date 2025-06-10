@@ -1,0 +1,582 @@
+---
+title: "ST2195 Coursework Project Qn2"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-04-23"
+---
+
+```{r, message=FALSE}
+### These are the packages used for the analysis
+library(dplyr) 
+library(tidyverse)
+library(ggplot2)
+library(scales) 
+library(reshape2)
+library(lubridate)
+library(gplots) 
+library(ggpubr)
+library(caret) 
+library(ROCit)
+library(AUC)
+library(glmnet)
+library(Matrix)
+
+```
+
+#### Loading in Data set
+
+```{r}
+# ========== Load in relevant data from .csv files ===============
+# loading in planes data from .csv file
+planes <- read.csv("plane-data.csv", header = TRUE) 
+
+# Function that loads in the .csv files to be loaded into the ontime table
+merged <- function(id = 1999:2008) {
+  dfs <- lapply(id, function(year) {
+    # Read the CSV file
+    df <- read.csv(paste0(year, ".csv"), header = TRUE)
+
+    # Convert selected columns to numeric; non-numeric values will become NA
+    cols_to_check <- c("Year", "Month", "DayofMonth", "DayOfWeek", "DepTime", "CRSDepTime", "ArrTime", "CRSArrTime", "ArrDelay", "DepDelay", "Cancelled", "Diverted")
+
+    df[cols_to_check] <- lapply(df[cols_to_check], as.numeric)
+
+    # Filter out rows where any of the columns are NA
+    df <- df %>% filter(!if_any(all_of(cols_to_check), is.na))
+
+    # Return the cleaned dataframe
+    return(df)
+  })
+  # Combine all dataframes into one
+  do.call(rbind, dfs)
+}
+
+# A subset of 10 years ranging from 1999 - 2008 is chosen for my analysis
+ontime <- merged(1999:2008) 
+
+
+```
+
+To create the ontime data frame, we decided to define a function named `merged()`.
+
+The `merged()` function is based on the `read.csv()` function, the function is made in such a way that it goes through a `for loop` that loops through the selected years and then using the `rbind()` function to append consecutive years into df, we then end the loop by passing df into the ontime data frame in the global environment using `assign()`.
+
+#### Looking at how the data has been structured
+
+After loading in the data into data frames, we will have to look through the data frame for any errors or corrupted data, and perform any data cleaning that is needed. This needs to be done as the insights provided by the analysis is only as good as the data we feed it, therefore, to ensure an accurate and insightful analysis we will have to “clean” the data.
+
+##### ontime data frame
+
+```{r}
+# Looking into the data structure of ontime
+str(ontime)
+
+```
+
+Using the `str()` function we can take a look at how ontime has been structured. We can see that there are 60,192,830 observations and 29 variables, this is a relatively large data set so it is impossible to look through it in its entirety to look for errors.
+
+
+##### Cleaning the ontime data frame
+
+```{r}
+# ============= Cleaning ontime dataframe ======================
+## Filtering out diverted and cancelled flights
+ontime <- ontime %>%
+  filter(Cancelled == 0, Diverted == 0) 
+
+# Removing unnecessary columns not needed for the analysis
+ontime <- ontime %>% 
+  select(
+    -CarrierDelay,
+    -WeatherDelay, 
+    -NASDelay, 
+    -SecurityDelay, 
+    -LateAircraftDelay,
+    -CancellationCode,
+    -TaxiIn,
+    -TaxiOut,
+    -Origin,
+    -Dest,
+    -AirTime,
+    -FlightNum,
+    -ActualElapsedTime,
+    -CRSElapsedTime
+  )
+
+## Creating Date column
+### Using the make_date() automatically formats the column into date data type
+ontime <- ontime %>%
+  mutate(Date = make_date(Year, Month, DayofMonth))
+
+```
+
+To tackle the issue of the "date" values in the ontime data frame, we used the `mutate()` function to create the Date column where the 3 ‘date’ values are combined into one, we then used the `make_date()` function to transform Date into a Date data type
+
+```{r}
+# Looking at the structure of the "cleaned" ontime
+str(ontime)
+
+```
+
+With this we are done cleaning ontime.
+
+##### planes data frame
+
+```{r}
+# Looking into the data structure of planes
+str(planes)
+
+```
+
+##### Cleaning the planes data frame
+
+```{r, warning=FALSE}
+# ======= plane dataframe ============
+# Convert year to character for manipulation
+planes$year <- as.character(planes$year)
+# Remove rows with 'none', '0', or '' values in year
+planes <- planes %>%
+  filter(!(year %in% c('none', '', '0')))
+# Convert year back to numeric for further analysis
+planes$year <- as.numeric(planes$year)
+
+# Looking into the data structure of the "cleaned" planes data frame
+str(planes)
+
+```
+
+We can see that from the structure of the cleaned planes data frame, the observations dropped to 4479 with an increase to 12 variables. We can now see issue_date in the correct Date data type, we can also see that the blank values are no longer present.
+
+With the data frames cleaned, we can now proceed with the analysis.
+
+## Data Analysis
+
+### Question 1
+
+#### What are the best times and days of the week to minimise delays each year?
+
+To answer this question, we decided to categorize CRSDepTime attribute as the various time of day and the DayofWeek attribute as the day of the week. We will be selecting Arrival Delays (ArrDelay) as the indicator of delay as flights can depart late and still arrive early or on time, so from the perspective of the passenger, arrival delays will impact their travel plans more.
+
+```{r}
+# Using the case_when function in the dplyr library:
+# To categorize the Day of Week, Time of Day
+# To identify the delayed flights
+ontime <- ontime %>%
+  mutate(Day = case_when(
+           DayOfWeek == 1 ~ "Monday",
+           DayOfWeek == 2 ~ "Tuesday",
+           DayOfWeek == 3 ~ "Wednesday",
+           DayOfWeek == 4 ~ "Thursday",
+           DayOfWeek == 5 ~ "Friday",
+           DayOfWeek == 6 ~ "Saturday",
+           TRUE ~ "Sunday"), 
+         TimeofDay = case_when(
+           CRSDepTime %in% 500:1159 ~ "Morning", 
+           CRSDepTime %in% 1200:1659 ~ "Afternoon", 
+           CRSDepTime %in% 1700:2059 ~ "Evening",
+           TRUE ~ "Night"),
+         Delayed = case_when(
+           ArrDelay > 0 ~ 1,
+           TRUE ~ 0))
+
+```
+
+We chose to create new columns in the ontime data frame as these new variables could be used down the line to answer other questions.
+
+We created the new columns by using the `mutate()` function in conjunction with the `case_when()` function.
+
+For Day column, the `case_when()` function will return the corresponding day of week in its word format.
+
+For the TimeofDay column, the `case_when()` function returns "Morning" when CRSDepTime is between 500 and 1159, "Afternoon" when CRSDepTime is between 1200 and 1659, "Evening" when CRSDepTime is between 1700 and 2059, We wrote down "TRUE" in the `case_when()` function as it will automatically categorize the remaining values as "Night", this is based on the logic that if time of day is not "Morning" or "Afternoon" or "Evening" it has to be "Night".
+
+For the Delayed column, the `case_when()` function returns 1 when ArrDelay is greater than 0, and returns 0 for any other values of ArrDelay.
+
+#### Delays Table
+```{r}
+Delays <- ontime %>%
+  group_by(Year, Day, TimeofDay) %>%
+  summarise(
+    YearlyAvgDelay = round(mean(ArrDelay, na.rm = TRUE), 2),  # Calculate and round the average delay
+    .groups = "drop"
+  )
+
+BestTimes <- Delays %>%
+  arrange(Year, YearlyAvgDelay) %>%
+  group_by(Year) %>%
+  slice_head(n = 1)  # Get the row with the minimum delay for each year
+
+head(BestTimes)
+
+years <- unique(Delays$Year)  # Get all unique years from the data
+
+# Setting variables as factors to improve clarity in the charts
+Delays$TimeofDay <- factor(Delays$TimeofDay, levels = c("Morning", "Afternoon", "Evening", "Night"))
+Delays$Day <- factor(Delays$Day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+
+for (year in years) {
+  # Filter the data for just one year
+  yearly_data <- filter(Delays, Year == year)
+  
+  # Create the plot for this particular year
+ BestTimes_graph <- ggplot(yearly_data, aes(x = TimeofDay, y = YearlyAvgDelay, group = Day, color = Day)) +
+    geom_point() +  # Add points
+    geom_line() +  # Connect points with lines
+    labs(
+      x = "Time of Day",
+      y = "Average Delay (Minutes)",
+      title = paste("Average Delay across time periods in", year)
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme(legend.title = element_text(size = 12), legend.text = element_text(size = 10))
+ 
+ print(BestTimes_graph)
+
+}
+
+```
+```{r}
+# Calculate average delays across the entire period
+TotalDelays <- ontime %>%
+  group_by(Day, TimeofDay) %>%
+  summarise(
+    AvgDelay = round(mean(ArrDelay, na.rm = TRUE), 2),  # Calculate and round the average delay
+    .groups = "drop"
+  )
+
+# Setting variables as factors to improve clarity in the charts
+TotalDelays$TimeofDay <- factor(TotalDelays$TimeofDay, levels = c("Morning", "Afternoon", "Evening", "Night"))
+TotalDelays$Day <- factor(TotalDelays$Day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+    # Create a line plot
+AvgDelayGraph <- ggplot(TotalDelays, aes(x = TimeofDay, y = AvgDelay, group = Day, color = Day)) +
+  geom_point() +  # Add points
+  geom_line() +  # Connect points with lines
+  labs(
+    x = "Time of Day",
+    y = "Average Delay (in Minutes)",
+    title = "Average Delay by Time of Day"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Display the plot
+print(AvgDelayGraph)
+
+```
+We then create the Flights table using the ontime data frame, we first grouped the data by Day and TimeofDay using the `group_by()` function, and using the `summarise()` function to derive meaningful variables from the combination of the grouped variables.
+
+
+AvgDelay is derived using the `mean()` function, this function obtains the average arrival delays for each combination of Day and TimeofDay.
+
+We then used the `select()` function to make it such that the Flights table only holds the columns Day, TimeofDay, AvgDelay.
+
+Just by looking at the BestTimes table, we can see that the lowest average arrival delay happens on a Sunday Morning, and the highest average arrival delay occurs on a.
+
+
+### Question 2
+
+#### Evaluate whether older planes suffer more delays on a year-to-year basis.
+
+To answer this question we will have to join the ontime dataframe and the planes dataframe, and using the joined table
+
+We created the AircraftAge_Delay using the `merged()` function to perform a inner join the ontime data frame and planes data frame on the same tailnum(TailNum in ontime), we then derived AircraftAge by subtracting the year of flight from 'Year' from ontime by 'year' from planes.
+
+#### AircraftAge_Delay Table
+
+We will selecting all relevant data to answer this question using the `select()` function. For this question we will still be using ArrDelay as the indicator of delays.
+
+```{r}
+# ===== Creating the Aircraft_Delays table for analysis ======
+# Create the Aircraft_Delay table by joining ontime and planes table on the attribute "TailNum"
+
+AircraftAge_Delay <- ontime %>%
+  merge(planes, by.x = c("TailNum"), by.y = ("tailnum")) %>%
+  mutate(AircraftAge = Year - year) %>%
+  select(AircraftAge, Delayed)
+
+head(AircraftAge_Delay)
+
+# ======== Visualizing AircraftAge_Delays table ===================
+# Distribution of AircraftAge
+ggplot(AircraftAge_Delay, aes(x = AircraftAge)) +
+  geom_histogram(fill = "steelblue", binwidth = 1, color = "black") +
+  ylab("Number of Delays")
+
+```
+
+We used `ggplot()` in conjunction with `geom_histogram()` to create a histogram to view the distribution of AircraftAge, looking at the histogram, we can see that some planes have been classified as having negative age, this is impossible, but a possible reason that this happened is because the planes data frame contains planes from 2008 as well, therefore the tailnum of the planes with negative age could have been linked to newer planes. From the histogram, we can also see that after the age of 22, the number of planes still active drops off significantly.
+
+#### Cleaning the AircraftAge_Delays Table
+
+```{r}
+# ======= Cleaning Data ============
+# Age cannot be negative so will be removing them as outliers
+# Aircraft above the Age of 22 has significantly lesser flights, removed as noise
+AircraftAge_Delay <- AircraftAge_Delay %>%
+  filter(AircraftAge > -1 & AircraftAge < 23)
+
+# ======== Visualizing Cleaned Data ===================
+# Distribution of flights
+ggplot(AircraftAge_Delay, aes(x = AircraftAge)) +
+  geom_histogram(fill = "steelblue", binwidth = 1, color = "black") +
+  ylab("Number of Delays")
+
+```
+
+Looking at the "cleaned" AircraftAge, we can see that we successfully removed the outliers and noise from the AircraftAge_Delay table.
+
+We decided that conducting Pearson's Correlation Analysis allows us to identify the linear relationship of AircraftAge and the number of delays will allow us to conclude that older planes suffer more delays.
+
+#### Pearson's Correlation Analysis
+
+The Correlation Analysis allows us to identify the linear relationship between 2 variables, if there is a positive correlation between the 2 variables it means that as one variable increases the other also increases, and if there is a negative correlation it means that as one variable increases the other decreases.
+
+In order to ensure fairness, I decided to change the number of delays into percentage of delays, which calculates the percentage of delay by adding up the total flights, and the number of delayed flights by age and dividing the number of delayed flights with the total number of flights by age.
+
+Using this we can find out whether as age increase, will the chances of delay increase or not.
+
+##### Preparing the table for Pearson's Correlation
+
+```{r}
+
+# Grouping the table on AircraftAge
+# Deriving AvgDelay
+AircraftAge_Delay <- AircraftAge_Delay %>%
+  group_by(AircraftAge) %>%
+  summarise(
+    TotalFlights = n(),  # Count total flights for each age
+    DelayedFlights = sum(Delayed, na.rm = TRUE),  # Sum up all delayed instances
+    DelayPercentage = (DelayedFlights / TotalFlights) * 100  # Calculate the percentage of delayed flights
+  ) %>%
+  select(AircraftAge, DelayPercentage)
+
+
+head(AircraftAge_Delay)
+```
+
+To prepare the table for the correlation analysis, we first have to group the table using the `group_by()` function to group the AircraftAge, then using `summarise()` in conjunction with `mean()` to derive the average arrival delay (AvgDelay).
+
+##### Verifying Test Assumptions
+
+Before conducting pearson's correlation, there are some test assumptions we have to check.
+
+1.  Is there a Linear Relationship?
+
+To visualize this we will be creating a scatter plot using `ggscatter()` with the option `add = "reg.line"` to add a regression line.
+
+```{r, message=FALSE}
+# ========== Visualizing Data ======================
+ggscatter(AircraftAge_Delay, x = "AircraftAge", y = "DelayPercentage",
+          add = "reg.line", conf.int = TRUE,
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Age of Aircraft", ylab = "Percentage of Delay")
+
+```
+
+Looking at the plot above, we can see that there seems to be a linear relationship between the 2 variables.
+
+2.  Does the 2 variables follow a normal distribution?
+
+```{r}
+# Using the gplot package to plot the normality plots
+# AircraftAge
+ggqqplot(AircraftAge_Delay$AircraftAge, ylab = "AircraftAge")
+
+# Number of Delays
+ggqqplot(AircraftAge_Delay$DelayPercentage, ylab = "Percentage of Delay")
+
+```
+
+The plots from the `ggqqplot()` show that the data for both AircraftAge And number of delays are normally distributed.
+
+To confirm this we will be conducting the Shapiro-Wilk normality test using `shapiro.test()` to test normality of the 2 variables.
+
+Normality Test Hypotheses:
+
+$H_0$ : The data are normally distributed
+
+$H_1$ : The data are not normally distributed
+
+Setting a significance level of 5%, we will reject the null hypothesis if the p-value of the test is less than 0.05
+
+```{r}
+# if-else statement of the normality test on Aircraft Age
+if (shapiro.test(AircraftAge_Delay$AircraftAge)$p.value < 0.05) {
+  print(paste0("The shapiro-wilk test for normallity for AircraftAge returned a p-value of ", round(shapiro.test(AircraftAge_Delay$AircraftAge)$p.value, 2)))
+} else {
+    print(paste0("The shapiro-wilk test for normallity for AircraftAge returned a p-value of ", round(shapiro.test(AircraftAge_Delay$AircraftAge)$p.value, 2)))
+}
+
+# if-else statement of the normality test on Percentage of Delay
+if (shapiro.test(AircraftAge_Delay$DelayPercentage)$p.value < 0.05) {
+  print(paste0("The shapiro-wilk test for normallity for DelayPercentage returned a p-value of ", round(shapiro.test(AircraftAge_Delay$DelayPercentage)$p.value, 2)))
+} else {
+    print(paste0("The shapiro-wilk test for normallity for DelayPercentage returned a p-value of ", round(shapiro.test(AircraftAge_Delay$DelayPercentage)$p.value, 2)))
+}
+
+```
+
+Both p-values are greater than the significance level 0.05 implying that there is insufficient evidence at 5% significance level to conclude that the distribution of the data are significantly different from normal distribution. In other words, we can assume normality.
+
+After verifying the test assumptions, we can proceed with increased confidence in the correlation test.
+
+##### Pearson's Correlation Formula:
+
+$$ r = \frac{\sum(x-m_{x})(y-m_y)}{(\sqrt{\sum(x-m_{x})^2\sum(y-m_y)^2}} $$
+
+$m_{x}$ and $m_{y}$ are the means of x and y variables
+
+The p-value (Significance Level) of the correlation is determined by looking at the corresponding p-value using the t-distribution table for $df = n - 2$
+
+##### Correlation test hypotheses:
+
+$H_0$ : AircraftAge and Number of Delays are not correlated
+
+$H_1$ : AircraftAge and Number of Delays are correlated
+
+Setting a significance level of 5%, we will reject the null hypothesis if the p-value of the test is less than 0.05
+
+##### Results of Pearson's Correlation
+
+Instead of calculating by hand, we can use the `cor.test()` function and specifying the option `method = "pearson"` to tell R to conduct a Pearson's correlation analysis on the 2 variables.
+
+```{r}
+# =========== Correlation Test ========================
+corr_test <- cor.test(AircraftAge_Delay$DelayPercentage, AircraftAge_Delay$AircraftAge,
+                               method = "pearson")
+corr_test
+
+# if-else statement that tells us whether to reject null hypothesis or not
+if (corr_test$p.value < 0.05) {
+  print("Reject Null Hypothesis")
+} else {
+  print("Do not Reject Null Hypothesis")
+}
+```
+
+Since, p-value = 2.204e-08 < 0.05, therefore, we can reject null hypothesis at 5% significance level, and conclude that AircraftAge and Percentage of Delay are significantly correlated. This finding is further supported by the 95% confidence interval: 0.742606 0.950098, which does not include the value 0. With a correlation coefficient of 0.88, it means that AircraftAge and the Percentage of Delay have a medium positive linear relationship.
+
+##### Result of Analysis
+
+Since there is a medium positive correlation between AircraftAge and the Percentage of Delays, it is not unreasonable to assume that as Aircraft Age increases the Percentage of Delays also increases, therefore, older planes do suffer more delays.
+
+### Question 3
+
+(c) For each year, fit a logistic regression model for the probability of diverted US flights using as many features as possible from attributes of the departure date, the scheduled departure and arrival times, the coordinates and distance between departure and planned arrival airports, and the carrier. Visualize the coefficients across years.
+
+
+
+```{r}
+# Load in new set for diverted flight analysis
+
+merged2 <- function(id = 1999:2008) {
+  dfs <- lapply(id, function(year) {
+    # Read the CSV file
+    df <- read.csv(paste0(year, ".csv"), header = TRUE)
+
+    # Convert selected columns to numeric; non-numeric values will become NA
+    cols_to_check <- c("Year", "Month", "DayofMonth", "DayOfWeek", "DepTime", "CRSDepTime", "CRSArrTime", "DepDelay", "Cancelled", "Diverted")
+
+    df[cols_to_check] <- lapply(df[cols_to_check], as.numeric)
+
+    # Filter out rows where any of the columns are NA
+    df <- df %>% filter(!if_any(all_of(cols_to_check), is.na))
+
+    # Return the cleaned dataframe
+    return(df)
+  })
+  # Combine all dataframes into one
+  do.call(rbind, dfs)
+}
+divertedflights <- merged2(1999:2008)  # Call the function to load data
+
+divertedflights <- divertedflights %>% #filter out cancelled flights
+  filter(Cancelled == 0) 
+
+# Selecting relevant columns
+divertedflights <- divertedflights %>%
+  select(Diverted, DayOfWeek, DayofMonth, Month, Year, CRSDepTime, CRSArrTime, Distance)
+
+```
+
+### Splitting of data to fit the logistic regression models
+
+```{r}
+
+# Split the data into training and test sets for each year
+set.seed(123)  # for reproducibility
+split_data <- lapply(split(divertedflights, divertedflights$Year), function(data) {
+  indices <- createDataPartition(data$Diverted, p = 0.8, list = TRUE, times = 1)
+  list(
+    train = data[indices[[1]], ],
+    test = data[-indices[[1]], ]
+  )
+})
+
+# Fit logistic regression models with a check for factor levels
+models <- lapply(split_data, function(data) {
+
+    tryCatch({
+      glm(Diverted ~ .-Year, data = data$train, family = binomial())
+    }, error = function(e) {
+      message("Error fitting model: ", e$message)
+      NULL
+    })
+  })
+
+# Extract coefficients and prepare for plotting
+coefficients_list <- lapply(models, function(model) {
+  if (!is.null(model)) {
+    coef(model)
+  } else {
+    NA  # Use NA to handle models that did not fit or failed
+  }
+})
+
+# Creating a dataframe for plotting and handling NA or NULL values
+coefficients_df <- do.call(rbind, lapply(names(coefficients_list), function(year) {
+  coef_list <- coefficients_list[[year]]
+  if (!is.null(coef_list) && any(!is.na(coef_list))) {
+    data.frame(
+      Year = year,
+      Feature = names(coef_list),
+      Coefficient = unlist(coef_list)
+    )
+  } else {
+    data.frame(Year = year, Feature = NA, Coefficient = NA)  # Handle cases with NA
+  }
+}))
+
+# Filter out any rows that may contain NA values due to failed model fits
+coefficients_df <- coefficients_df[!is.na(coefficients_df$Feature), ]
+
+# Convert 'Year' to numeric
+coefficients_df$Year <- as.numeric(coefficients_df$Year)
+```
+
+##### Visualisation of coefficients
+
+```{r}
+# Pivot the data to a wide format suitable for a heatmap
+coefficients_wide <- coefficients_df %>%
+  filter(Feature != "(Intercept)") %>%  # Exclude intercept
+  pivot_wider(names_from = Feature, values_from = Coefficient)
+
+# Create a heatmap of the coefficients
+ggplot(data = melt(coefficients_wide, id.vars = 'Year'), aes(x = variable, y = Year, fill = value)) +
+  geom_tile() +  # This creates the heatmap tiles
+  scale_fill_viridis_c(option = "C", direction = -1) +  # Color scale
+  labs(x = "Feature", y = "Year", fill = "Coefficient") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x labels for better readability
+
+```
+
+## References
+
+Kassambara. (2018, March 11). Logistic Regression Essentials in R STHDA. Retrieved February 4, 2022, from <http://www.sthda.com/english/articles/36-classification-methods-essentials/151-logistic-regression-essentials-in-r/>
+
+STHDA. (n.d.). Correlation Test between two variables in R. STHDA. Retrieved February 4, 2022, from <http://www.sthda.com/english/wiki/correlation-test-between-two-variables-in-r>
+
+
